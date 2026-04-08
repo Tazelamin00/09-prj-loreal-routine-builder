@@ -26,9 +26,10 @@
       <!-- Category Filter -->
       <div class="search-section">
         <select id="categoryFilter">
-          <option value="" disabled selected>Choose a Category</option>
+          <option value="all" selected>All Categories</option>
           <option value="cleanser">Cleansers</option>
           <option value="moisturizer">Moisturizers & Treatments</option>
+          <option value="skincare">Skincare Serums & Treatments</option>
           <option value="haircare">Haircare</option>
           <option value="makeup">Makeup</option>
           <option value="hair color">Hair Color</option>
@@ -41,11 +42,17 @@
 
       <!-- Products Grid -->
       <div id="productsContainer" class="products-grid"></div>
+      <button id="showMoreProducts" class="show-more-btn" type="button">
+        Show More Products
+      </button>
 
       <!-- Selected Products -->
       <div class="selected-products">
         <h2>Selected Products</h2>
         <div id="selectedProductsList"></div>
+        <button id="clearSelectedProducts" class="clear-selected-btn" type="button">
+          Clear All Selections
+        </button>
         <button id="generateRoutine" class="generate-btn">
           <i class="fa-solid fa-wand-magic-sparkles"></i> Generate Routine
         </button>
@@ -87,6 +94,7 @@
 
     <!-- secrets.js can be removed when using Cloudflare Workers for API requests -->
     <script src="secrets.js"></script>
+    <script src="products-data.js"></script>
     <script src="script.js"></script>
   </body>
 </html>
