@@ -71,7 +71,7 @@ body::after {
 }
 
 .logo {
-  width: clamp(140px, 24vw, 210px);
+  width: clamp(120px, 20vw, 180px);
   margin-bottom: 14px;
 }
 
