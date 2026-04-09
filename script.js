@@ -1,16 +1,20 @@
 /* Get references to DOM elements */
 const categoryFilter = document.getElementById("categoryFilter");
+const productSearch = document.getElementById("productSearch");
 const productsContainer = document.getElementById("productsContainer");
 const showMoreProductsButton = document.getElementById("showMoreProducts");
 const selectedProductsList = document.getElementById("selectedProductsList");
 const clearSelectedProductsButton = document.getElementById("clearSelectedProducts");
 const generateRoutineButton = document.getElementById("generateRoutine");
+const directionToggleButton = document.getElementById("directionToggle");
 const chatForm = document.getElementById("chatForm");
 const chatWindow = document.getElementById("chatWindow");
 const userInput = document.getElementById("userInput");
 
 const INITIAL_PRODUCT_LIMIT = 6;
 const SELECTED_PRODUCTS_STORAGE_KEY = "loreal-selected-products";
+const DIRECTION_STORAGE_KEY = "loreal-direction";
+const SESSION_API_KEY_STORAGE_KEY = "loreal-session-openai-key";
 
 /* Store selected products and currently visible products */
 let selectedProducts = [];
@@ -19,6 +23,7 @@ let expandedDescriptions = new Set();
 let allProducts = [];
 let currentFilteredProducts = [];
 let visibleProductsCount = INITIAL_PRODUCT_LIMIT;
+let currentSearchTerm = "";
 let chatHistory = [];
 let lastGeneratedRoutine = "";
 
@@ -81,6 +86,11 @@ function normalizeValue(value) {
   return String(value).trim().toLowerCase();
 }
 
+/* Detect RTL language characters so mixed-language content still reads naturally */
+function hasRtlCharacters(text) {
+  return /[\u0590-\u08FF]/.test(text);
+}
+
 /* Check if a product is currently selected */
 function isSelected(productId) {
   return selectedProducts.some((product) => getProductId(product) === productId);
@@ -126,11 +136,11 @@ function loadSelectedProducts() {
 }
 
 /* Send chat requests to Cloudflare Worker (not directly to OpenAI) */
-async function requestWorkerCompletion(messages, temperature) {
+async function requestWorkerCompletion(messages, temperature, options = {}) {
   const workerEndpoint = window.WORKER_API_URL;
 
   if (!workerEndpoint) {
-    throw new Error("Missing WORKER_API_URL. Add your Worker endpoint in secrets.js.");
+    return requestDirectOpenAICompletion(messages, temperature, options);
   }
 
   const response = await fetch(workerEndpoint, {
@@ -142,6 +152,7 @@ async function requestWorkerCompletion(messages, temperature) {
       model: "gpt-4o",
       messages,
       temperature,
+      useWebSearch: Boolean(options.useWebSearch),
     }),
   });
 
@@ -153,12 +164,118 @@ async function requestWorkerCompletion(messages, temperature) {
   }
 
   const content = data?.choices?.[0]?.message?.content;
+  const citations = Array.isArray(data?.citations) ? data.citations : [];
 
   if (!content) {
     throw new Error("No response content returned from Worker.");
   }
 
-  return content;
+  return {
+    content,
+    citations,
+  };
+}
+
+/* Resolve API key from config or ask once for this browser session */
+function getSessionOpenAIKey() {
+  const configuredKey = window.OPENAI_API_KEY;
+
+  if (configuredKey) {
+    return configuredKey;
+  }
+
+  const sessionKey = sessionStorage.getItem(SESSION_API_KEY_STORAGE_KEY);
+
+  if (sessionKey) {
+    return sessionKey;
+  }
+
+  const enteredKey = window.prompt(
+    "Paste your OpenAI API key to use the chatbot for this session only:"
+  );
+
+  if (!enteredKey) {
+    return "";
+  }
+
+  sessionStorage.setItem(SESSION_API_KEY_STORAGE_KEY, enteredKey.trim());
+  return enteredKey.trim();
+}
+
+/* Fallback: call OpenAI directly when Worker URL is not configured */
+async function requestDirectOpenAICompletion(messages, temperature, options = {}) {
+  const apiKey = getSessionOpenAIKey();
+
+  if (!apiKey) {
+    throw new Error(
+      "Missing WORKER_API_URL and OpenAI API key. Add one in secrets.js or provide it in the session prompt."
+    );
+  }
+
+  if (options.useWebSearch) {
+    const webResponse = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        tools: [{ type: "web_search_preview" }],
+        input: messages,
+        temperature,
+      }),
+    });
+
+    const webData = await webResponse.json();
+
+    if (!webResponse.ok) {
+      const errorMessage = webData?.error?.message || "OpenAI web search request failed.";
+      throw new Error(errorMessage);
+    }
+
+    const content = webData.output_text || "";
+
+    if (!content) {
+      throw new Error("No response content returned from OpenAI.");
+    }
+
+    return {
+      content,
+      citations: [],
+    };
+  }
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      messages,
+      temperature,
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    const errorMessage = data?.error?.message || "OpenAI request failed.";
+    throw new Error(errorMessage);
+  }
+
+  const content = data?.choices?.[0]?.message?.content;
+
+  if (!content) {
+    throw new Error("No response content returned from OpenAI.");
+  }
+
+  return {
+    content,
+    citations: [],
+  };
 }
 
 /* Ask Cloudflare Worker to generate a routine from selected products */
@@ -189,9 +306,14 @@ function isBeautyRelatedQuestion(message) {
 }
 
 /* Draw a user/assistant message in the chat window */
-function appendChatMessage(role, text) {
+function appendChatMessage(role, text, citations = []) {
   const messageDiv = document.createElement("div");
   messageDiv.className = `chat-message ${role}`;
+  const isRtlText = hasRtlCharacters(text);
+
+  if (isRtlText) {
+    messageDiv.setAttribute("dir", "rtl");
+  }
 
   const label = role === "user" ? "You" : "Advisor";
   messageDiv.innerHTML = `
@@ -200,6 +322,27 @@ function appendChatMessage(role, text) {
   `;
 
   messageDiv.querySelector(".chat-text").textContent = text;
+
+  if (citations.length > 0) {
+    const citationList = document.createElement("ul");
+    citationList.className = "chat-citations";
+
+    citations.forEach((citation) => {
+      const listItem = document.createElement("li");
+      const link = document.createElement("a");
+
+      link.href = citation.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = citation.title || citation.url;
+
+      listItem.appendChild(link);
+      citationList.appendChild(listItem);
+    });
+
+    messageDiv.appendChild(citationList);
+  }
+
   chatWindow.appendChild(messageDiv);
   chatWindow.scrollTop = chatWindow.scrollHeight;
 }
@@ -214,7 +357,58 @@ async function getFollowUpResponse(userMessage) {
     return "I can help with your generated routine and beauty topics like skincare, haircare, makeup, and fragrance. Please ask a question in that area.";
   }
 
-  return requestWorkerCompletion(chatHistory, 0.6);
+  return requestWorkerCompletion(chatHistory, 0.6, { useWebSearch: true });
+}
+
+/* Apply both category filter and keyword product search together */
+function applyActiveFilters() {
+  if (allProducts.length === 0) {
+    return;
+  }
+
+  const selectedCategory = categoryFilter.value;
+  const shouldShowAll = normalizeValue(selectedCategory) === "all";
+  const normalizedQuery = normalizeValue(currentSearchTerm);
+
+  const categoryFilteredProducts = shouldShowAll
+    ? allProducts
+    : allProducts.filter(
+        (product) => normalizeValue(product.category) === normalizeValue(selectedCategory)
+      );
+
+  const fullyFilteredProducts = normalizedQuery
+    ? categoryFilteredProducts.filter((product) => {
+        const searchableText = normalizeValue(
+          `${product.name} ${product.brand} ${product.category} ${product.description}`
+        );
+        return searchableText.includes(normalizedQuery);
+      })
+    : categoryFilteredProducts;
+
+  visibleProductsCount = INITIAL_PRODUCT_LIMIT;
+  displayProducts(fullyFilteredProducts);
+}
+
+/* Apply and persist UI text direction (LTR/RTL) */
+function setDirection(direction) {
+  const normalizedDirection = direction === "rtl" ? "rtl" : "ltr";
+  document.documentElement.setAttribute("dir", normalizedDirection);
+  document.documentElement.setAttribute(
+    "lang",
+    normalizedDirection === "rtl" ? "ar" : "en"
+  );
+  localStorage.setItem(DIRECTION_STORAGE_KEY, normalizedDirection);
+  directionToggleButton.textContent = normalizedDirection === "rtl" ? "EN" : "AR";
+}
+
+function loadSavedDirection() {
+  const savedDirection = localStorage.getItem(DIRECTION_STORAGE_KEY);
+
+  if (savedDirection) {
+    return savedDirection;
+  }
+
+  return "rtl";
 }
 
 /* Render selected products list area */
@@ -354,23 +548,11 @@ function toggleDescription(productId) {
 /* Filter and display products when category changes */
 categoryFilter.addEventListener("change", async (e) => {
   try {
-    const selectedCategory = e.target.value;
-    const shouldShowAll = normalizeValue(selectedCategory) === "all";
-
     if (allProducts.length === 0) {
       allProducts = await loadProducts();
     }
 
-    /* filter() creates a new array containing only products 
-       where the category matches what the user selected */
-    const filteredProducts = shouldShowAll
-      ? allProducts
-      : allProducts.filter(
-          (product) => normalizeValue(product.category) === normalizeValue(selectedCategory)
-        );
-
-    visibleProductsCount = INITIAL_PRODUCT_LIMIT;
-    displayProducts(filteredProducts);
+    applyActiveFilters();
   } catch (error) {
     productsContainer.innerHTML = `
       <div class="placeholder-message">
@@ -380,12 +562,24 @@ categoryFilter.addEventListener("change", async (e) => {
   }
 });
 
+/* Filter products while typing keywords */
+productSearch.addEventListener("input", (e) => {
+  currentSearchTerm = e.target.value;
+  applyActiveFilters();
+});
+
+/* Toggle between LTR and RTL layout modes */
+directionToggleButton.addEventListener("click", () => {
+  const currentDirection = document.documentElement.getAttribute("dir") || "ltr";
+  const nextDirection = currentDirection === "rtl" ? "ltr" : "rtl";
+  setDirection(nextDirection);
+});
+
 /* Load and display products on first page load */
 async function initializeProducts() {
   try {
     allProducts = await loadProducts();
-    visibleProductsCount = INITIAL_PRODUCT_LIMIT;
-    displayProducts(allProducts);
+    applyActiveFilters();
   } catch (error) {
     const localFileHint =
       window.location.protocol === "file:"
@@ -499,7 +693,8 @@ generateRoutineButton.addEventListener("click", async () => {
   chatWindow.textContent = "Generating your personalized routine...";
 
   try {
-    const routine = await generateRoutineFromProducts(selectedProducts);
+    const routineResponse = await generateRoutineFromProducts(selectedProducts);
+    const routine = routineResponse.content;
     const selectedProductsJson = JSON.stringify(
       getProductsForPrompt(selectedProducts),
       null,
@@ -526,7 +721,8 @@ generateRoutineButton.addEventListener("click", async () => {
     chatWindow.innerHTML = "";
     appendChatMessage(
       "assistant",
-      `Routine generated from ${selectedProducts.length} selected product(s):\n\n${routine}`
+      `Routine generated from ${selectedProducts.length} selected product(s):\n\n${routine}`,
+      routineResponse.citations
     );
   } catch (error) {
     chatWindow.textContent = `Could not generate routine: ${error.message}`;
@@ -564,10 +760,13 @@ chatForm.addEventListener("submit", async (e) => {
   chatHistory.push({ role: "user", content: message });
 
   try {
-    const answer = await getFollowUpResponse(message);
-    appendChatMessage("assistant", answer);
-    chatHistory.push({ role: "assistant", content: answer });
+    const answerResponse = await getFollowUpResponse(message);
+    appendChatMessage("assistant", answerResponse.content, answerResponse.citations);
+    chatHistory.push({ role: "assistant", content: answerResponse.content });
   } catch (error) {
     appendChatMessage("assistant", `Could not answer follow-up question: ${error.message}`);
   }
 });
+
+/* Restore and apply saved direction on first load */
+setDirection(loadSavedDirection());

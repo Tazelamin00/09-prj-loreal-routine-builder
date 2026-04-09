@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ar" dir="rtl">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -25,6 +25,14 @@
 
       <!-- Category Filter -->
       <div class="search-section">
+        <label for="productSearch" class="visually-hidden">Search products</label>
+        <input
+          id="productSearch"
+          type="search"
+          placeholder="Search by product name, brand, or keyword"
+          autocomplete="off"
+        />
+
         <select id="categoryFilter">
           <option value="all" selected>All Categories</option>
           <option value="cleanser">Cleansers</option>
@@ -38,6 +46,10 @@
           <option value="suncare">Suncare</option>
           <option value="fragrance">Fragrance</option>
         </select>
+
+        <button id="directionToggle" type="button" class="direction-btn">
+          RTL
+        </button>
       </div>
 
       <!-- Products Grid -->
